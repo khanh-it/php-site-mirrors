@@ -1,12 +1,7 @@
 <?php
 /**
- * Requests for PHP
  *
- * Inspired by Requests for Python.
- *
- * Based on concepts from SimplePie_File, RequestCore and WP_Http.
- *
- * @package Requests
+ * @package Requests_Proxy
  */
 
 // === Require files ===
@@ -17,13 +12,8 @@ Requests::register_autoloader();
 require_once dirname(__FILE__) . '/Proxy/MimeType.php';
  
 /**
- * Requests for PHP
  *
- * Inspired by Requests for Python.
- *
- * Based on concepts from SimplePie_File, RequestCore and WP_Http.
- *
- * @package Requests
+ * @package Requests_Proxy
  */
 class Requests_Proxy {
 	/**
@@ -58,7 +48,9 @@ class Requests_Proxy {
 	/**
 	 * @var array Default request options! 
 	 */
-	protected $_options = array();
+	protected $_options = array(
+		'follow_redirects' => true
+	);
 	/**
 	 * Get default request options 
 	 * @return array 
@@ -109,11 +101,11 @@ class Requests_Proxy {
 			$urlParts['pathname'] = $matches[5];
 			$urlParts['search'] = $matches[6];
 			// +++ Domain with no subdomain
-			$domain = explode('.', $urlParts['host']);
-			$urlParts['domain'] = ($domain[($count = count($domain)) - 2]
-				? ($domain[$count - 2] . '.') : '') . $domain[$count - 1]
-			;
-			unset($domain, $count);
+			$urlParts['domain'] = explode('.', $urlParts['host']);
+			if (count($urlParts['domain']) > 2) {
+				array_shift($urlParts['domain']);
+			}
+			$urlParts['domain'] = implode('.', $urlParts['domain']);
 		}
 		// Format href with no `baseurl`.
 		if ($baseUrl) {
@@ -200,7 +192,7 @@ class Requests_Proxy {
 	/**
 	 * @var string Base url
 	 */
-	protected $_baseUrl = '/';
+	protected $_baseUrl = '';
 	/**
 	 * Get proxy url
 	 * @return string 
@@ -237,23 +229,82 @@ class Requests_Proxy {
 	protected $_res;
 	
 	/**
+	 * Hooks handler
+	 * @return Requests_Proxy
+	 */
+	public function _hooksHandler($evt, &$arguments) {
+		switch ($evt) {
+			// requests.before_request
+			case 'requests.before_request': {
+				//list($url, $headers, $data, $type, $options) = $arguments;
+			} break;
+			// #end#requests.before_request
+			
+			// requests.before_parse
+			case 'requests.before_parse': {
+			
+			} break;
+			// #end#requests.before_parse
+			
+			
+			// multiple.request.complete
+			case 'multiple.request.complete': {
+					
+			} break;
+			// #end#multiple.request.complete
+			
+			// request.before_redirect_check
+			case 'request.before_redirect_check': {
+					
+			} break;
+			// #end#request.before_redirect_check
+			
+			// request.after_request
+			case 'request.after_request': {
+					
+			} break;
+			// #end#request.after_request
+		}
+	}
+	
+	/**
 	 * Initilize
 	 */
 	protected function _init() {
+		// Assign self use
+		$proxy = $this;
+		
+		// Init hooks
+		$hooksEvts = array(
+			'requests.before_request',
+			'requests.before_parse',
+			'multiple.request.complete',
+			'requests.before_redirect_check',
+			'requests.after_request'
+		);
+		if (!($this->_options['hooks'] instanceof Requests_Hooks)) {
+			$this->_options['hooks'] = ($hooks = new Requests_Hooks());
+		}
+		foreach ($hooksEvts as $hooksEvt) {
+			$hooks->register($hooksEvt, function() use ($proxy, $hooksEvt) {
+				$proxy->_hooksHandler($hooksEvt, func_get_args());
+			});
+		} unset($hooksEvts, $hooksEvt);
+		
 		// Prepare request headers
 		$this->_headers = self::getAllRequestHeaders();
-		$this->_headers['Host'] = $this->_urlParts['host'];
-		if ($this->_headers['Referer']) {
-			$this->_headers['Referer'] = $this->_headers['Referer'];
-		}
+		// , remove unnecessary keys
+		unset(
+			// Those was set by `Requests` library.
+			$this->_headers['Host'],
+			$this->_headers['Referer']
+		);
 		
-		/*require_once "\Zend\Debug.php";
-		Zend_Debug::dump('===== Request headers: ');
-		Zend_Debug::dump($this->_headers);
-		Zend_Debug::dump($this->_data);
-		Zend_Debug::dump($this->_options);
-		Zend_Debug::dump($this->_urlParts);
-		die();*/
+		// Prepare request options
+		// +++ Auto set 'useragent'
+		if (!$this->_options['useragent'] && $this->_headers['User-Agent']) {
+			$this->_options['useragent'] = $this->_headers['User-Agent'];
+		}
 		
 		// Init Requests_Session
 		$this->_req = new Requests_Session($this->_urlParts['href'], $this->_headers, $this->_data, $this->_options);
@@ -283,10 +334,13 @@ class Requests_Proxy {
 			// Base url
 				case 'base_url': {
 					$this->_baseUrl = trim($value);
+					if ('/' == $this->_baseUrl) {
+						$this->_baseUrl = '';
+					}
 				} break;
 			// Assets Dir
 				case 'assets_dir': {
-					$this->_assetsDir = trim($value);
+					$this->_assetsDir = ($value = trim($value)) ? $value : $this->_assetsDir;
 				} break;
 			}
 		}
@@ -318,7 +372,7 @@ class Requests_Proxy {
 		$this->_session = $_SESSION[__CLASS__];
 		
 		// Set origin url
-		$this->_originUrlParts = self::parseUrl(self::serverUrl()); 
+		$this->_originUrlParts = self::parseUrl(self::serverUrl());
 		// Set proxy url
 		// +++ Case: proxy assets?
 		if ($this->_prx['assets'] && ($url != $this->_prx['assets'])) {
@@ -364,31 +418,44 @@ class Requests_Proxy {
 	 */
 	protected function _rewriteResponseHtml($resBody) {
 		// Get params...
+		// +++ Origin url parts
+		$originUrlParts = $this->getOriginUrlParts();
 		// +++ Url parts
 		$urlParts = $this->getUrlParts();
 		// +++ Baseurl
 		$baseUrl = $this->getBaseUrl();
-		//
-		$pattern = '/<(\w+)[^>]*((src|href|action|url)\s*=\s*([\'"]?)([^\'"]*)[\'"]?)[^>]*\/?>/is';
-		$resBody = preg_replace_callback($pattern, function($matches) use($urlParts, $baseUrl) {
+		
+		// Rewrite response's body content
+		// +++ 
+		$pattern = '/<(\w+)[^>]*((src|href|action|url)\s*=\s*([\'"]?)([^\'"]+)([\'"]?))[^>]*\/?>/is';
+		$resBody = preg_replace_callback($pattern, function($matches) use($urlParts, $originUrlParts, $baseUrl) {
 			// 
-			list($eleStr, $tagName, $attrStr, $attrName, $attrQuote, $attrValue) = $matches;
-			//require_once "\Zend\Debug.php";
-			//Zend_Debug::dump($matches);
+			list($eleStr, $tagName, $attrStr, $attrName, $attrOpen, $attrValue, $attrClose) = $matches;
 			// Case: 
 			if (0 === strpos($attrValue, '//')) {
 				$attrValue = "{$urlParts['protocol']}:{$attrValue}";
 			}
-			if ((0 === strpos($attrValue, 'http://'))
-				|| (0 === strpos($attrValue, 'https://'))
+			if ((0 === strpos($attrValue, $protocol = 'http://'))
+				|| (0 === strpos($attrValue, $protocol = 'https://'))
 			) {
-				$attrValue = "?_prx[assets]=" . urlencode($attrValue);
+				//
+				$originHost = "{$protocol}{$originUrlParts['host']}";
+				//
+				$requestHost = "{$protocol}{$urlParts['host']}";
+				//
+				if (0 === strpos($attrValue, $requestHost)) {
+					$attrValue = str_replace($requestHost, $originHost, $attrValue);
+				}
+				if (false !== strpos($attrValue, $originHost)) {
+					//$attrValue = "?_prx[assets]=" . urlencode($attrValue);
+				}
 			}
 			// Case: 
-			if (0 === strpos($attrValue, '/')) {
+			if (0 === strpos($attrValue, $protocol = '/')) {
 				$attrValue = $baseUrl . $attrValue;
-				$eleStr = str_replace($attrStr, "{$attrName}={$attrQuote}{$attrValue}{$attrQuote}", $eleStr);
 			}
+			$eleStr = str_replace($attrStr, "{$attrName}={$attrOpen}{$attrValue}{$attrClose}", $eleStr);
+			
 			// Return;
 			return $eleStr;
 		}, $resBody);
@@ -397,6 +464,7 @@ class Requests_Proxy {
 		// Return
 		return $resBody;
 	}
+	
 	/**
 	 * Rewrite response body `css`.
 	 * 
@@ -464,12 +532,16 @@ class Requests_Proxy {
 	 */
 	protected function _request($url = null)
 	{
-		// POST requests?
-		if ($this->_isRequestPOST()) {
-			$this->_res = $this->_req->post($url, null, $_POST, null);
-		// 	GET requests
-		} elseif ($this->_isRequestGET()) {
-			$this->_res = $this->_req->get($url);
+		try {
+			// POST requests?
+			if ($this->_isRequestPOST()) {
+				$this->_res = $this->_req->post($url, array(), $_POST);
+				// 	GET requests
+			} elseif ($this->_isRequestGET()) {
+				$this->_res = $this->_req->get($url);
+			}
+		} catch (Exception $e) {
+			
 		}
 		//require_once "\Zend\Debug.php";
 		//Zend_Debug::dump($this->_res);die();
@@ -495,7 +567,8 @@ class Requests_Proxy {
 		// +++ Clear unuse headers
 		unset(
 			// +++ Don't use this, as it should be controled by ours web server. 
-			$headers['content-encoding']
+			$headers['content-encoding'],
+			$headers['content-length']
 		);
 		// +++ Set required headers...
 		// +++ +++ 
@@ -508,7 +581,7 @@ class Requests_Proxy {
 		} unset($hKey);
 		// +++ Write headers
 		foreach ($headers as $hKey => $hValues) {
-			foreach ($hValues as $hValue) {
+			foreach ((array)$hValues as $hValue) {
 				// Rewrite cookies (if any)
 				if ('set-cookie' == $hKey) {
 					$hValue = $this->_rewriteCookieStr($hValue);
@@ -519,7 +592,7 @@ class Requests_Proxy {
 		}
 		//require_once "\Zend\Debug.php";
 		//Zend_Debug::dump('===== Response headers: ');
-		//Zend_Debug::dump(headers_list());//die();
+		//Zend_Debug::dump(headers_list());die();
 		// Return
 		return $this;
 	}
