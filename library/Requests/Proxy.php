@@ -9,6 +9,8 @@
 require_once dirname(__FILE__) . '/Requests.php';
 Requests::register_autoloader();
 // +++  
+require_once dirname(__FILE__) . '/Proxy/Hooks.php';
+require_once dirname(__FILE__) . '/Proxy/Common.php';
 require_once dirname(__FILE__) . '/Proxy/MimeType.php';
  
 /**
@@ -17,9 +19,41 @@ require_once dirname(__FILE__) . '/Proxy/MimeType.php';
  */
 class Requests_Proxy {
 	/**
-	 * @var array Proxy data (for private uses)
+	 * @var array Proxy options
 	 */
 	protected $_prx = array();
+	
+	/**
+	 * Get assets url
+	 * 
+	 * @return string
+	 */
+	public function getAssetsUrl() {
+		if ($this->_prx['assets']) {
+			$assets = str_replace(
+				array('https://', 'http://'),
+				array('', ''), 
+				$this->_prx['assets']
+			);
+			$filename = $this->_assetsDir . "/{$assets}";
+			if (is_file($filename)) {
+				return $this->_originUrlParts['origin'] . "/{$assets}";
+			}
+			return $this->_prx['assets'];
+		}
+	}
+	
+	/**
+	 * @var Requests_Proxy_Hooks 
+	 */
+	protected $_hooksUtil;
+	/**
+	 * Get hooks utility
+	 * @return Requests_Proxy_Hooks 
+	 */
+	public function getHooksUtil() {
+		return $this->_hooksUtil;
+	}
 	
 	/**
 	 * @var array Default request headers! 
@@ -48,105 +82,13 @@ class Requests_Proxy {
 	/**
 	 * @var array Default request options! 
 	 */
-	protected $_options = array(
-		'follow_redirects' => true
-	);
+	protected $_options = array();
 	/**
 	 * Get default request options 
 	 * @return array 
 	 */
 	public function getOptions() {
 		return $this->_options;
-	}
-	
-	/**
-	 * Get full url origin
-	 * @author khanhdtp 2016-08-10
-	 */
-	public static function serverUrl($use_query_string = true, $use_forwarded_host = true) {
-		$ssl = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == 'on');
-		$sp = strtolower($_SERVER['SERVER_PROTOCOL']);
-		$protocol = substr($sp, 0, strpos($sp, '/')) . (($ssl) ? 's' : '');
-		$port = $_SERVER['SERVER_PORT'];
-		$port = ((!$ssl && $port == '80') || ($ssl && $port == '443')) ? '' : ':' . $port;
-		$host = ($use_forwarded_host && isset($_SERVER['HTTP_X_FORWARDED_HOST'])) ? $_SERVER['HTTP_X_FORWARDED_HOST'] : (isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : null);
-		$host = isset($host) ? $host : $_SERVER['SERVER_NAME'] . $port;
-		$url = $protocol . '://' . $host . $_SERVER['REQUEST_URI'];
-		// Use query string?
-		if (!$use_query_string) {
-			$url = str_replace("?{$_SERVER['QUERY_STRING']}", '', $url);
-		}
-		// Return
-		return $url;
-	}
-	
-	/**
-	 * Parse url parts
-	 * 
-	 * @param $url string Url string
-	 * @param $baseUrl string Base url string
-	 * @return string 
-	 */
-	public static function parseUrl($url, $baseUrl = '') {
-		$urlParts = array();
-		// Get url parts
-		$pattern = '/((https?):\/\/([^\/:]+)):?(\d+)?([^?]*)(\??.*)/i';
-		if (preg_match($pattern, $url, $matches)) {
-			$urlParts['href'] = $matches[0];
-			$urlParts['origin'] = $matches[1];
-			$urlParts['protocol'] = $matches[2];
-			$urlParts['host'] = $matches[3];
-			$urlParts['hostname'] = $matches[3];
-			$urlParts['port'] = $matches[4];
-			$urlParts['pathname'] = $matches[5];
-			$urlParts['search'] = $matches[6];
-			// +++ Domain with no subdomain
-			$urlParts['domain'] = explode('.', $urlParts['host']);
-			if (count($urlParts['domain']) > 2) {
-				array_shift($urlParts['domain']);
-			}
-			$urlParts['domain'] = implode('.', $urlParts['domain']);
-		}
-		// Format href with no `baseurl`.
-		if ($baseUrl) {
-			$href = $urlParts['href'];
-			if (($urlParts['pathname'] != $baseUrl)
-				&& (0 === strpos($urlParts['pathname'], $baseUrl))
-			) {
-				$href = str_replace(
-					$urlParts['pathname'], 
-					str_replace($baseUrl, '', $urlParts['pathname']), 
-					$urlParts['href']
-				);
-			}
-			$urlParts['href'] = $href;
-		}
-		// Return
-		return $urlParts;
-	}
-	
-	/**
-	 * Get all request's headers
-	 * 
-	 * @return array
-	 */
-	public static function getAllRequestHeaders() {
-		$headers = array();
-		// Parse headers
-		$httpK = 'HTTP_';
-		foreach ($_SERVER as $key => $value) {
-			if (0 === strpos($key, $httpK)) {
-				$key = array_map(function($value){
-					return ucfirst(strtolower($value));
-				}, explode('_', str_replace($httpK, '', $key)));
-				$key = implode('-', $key);
-				if (!$headers[$key]) {
-					$headers[$key] = $value;
-				}
-			}
-		} unset($httpK, $key, $value);
-		// Return
-		return $headers;
 	}
 	
 	/**
@@ -181,7 +123,7 @@ class Requests_Proxy {
 	 */
 	public function setUrl($url) {
 		// Get url parts
-		$this->_urlParts = self::parseUrl($url, $this->_baseUrl);
+		$this->_urlParts = Requests_Proxy_Common::parseUrl($url, $this->_baseUrl);
 		if (empty($this->_urlParts)) {
 			throw new Exception('Invalid $url provided!');
 		}
@@ -292,7 +234,7 @@ class Requests_Proxy {
 		} unset($hooksEvts, $hooksEvt);
 		
 		// Prepare request headers
-		$this->_headers = self::getAllRequestHeaders();
+		$this->_headers = Requests_Proxy_Common::getAllRequestHeaders();
 		// , remove unnecessary keys
 		unset(
 			// Those was set by `Requests` library.
@@ -338,12 +280,23 @@ class Requests_Proxy {
 						$this->_baseUrl = '';
 					}
 				} break;
-			// Assets Dir
+			// Assets dir
 				case 'assets_dir': {
-					$this->_assetsDir = ($value = trim($value)) ? $value : $this->_assetsDir;
+					$assetsDir = trim($value);
+				} break;
+			// Proxy options
+				case 'prx': {
+					$prx = (array)$value;
 				} break;
 			}
 		}
+		// Set default assets dir?
+		$this->_assetsDir = $assetsDir ?: $_SERVER['DOCUMENT_ROOT'];
+		
+		// Get, + proxy options
+		$this->_prx = array_merge((array)$_GET['_prx'], (array)$prx);
+		unset($_GET['_prx']);
+		
 		// Return
 		return $this;
 	}
@@ -357,57 +310,35 @@ class Requests_Proxy {
  	 */
 	public function __construct($url, array $options = array())
 	{
-		// Get internal proxy params
-		$this->_prx = (array)$_GET['_prx'];
-		unset($_GET['_prx']);
-		
 		// Set options
 		$this->setOptions($options);
 		
+		// Set origin url
+		$this->_originUrlParts = Requests_Proxy_Common::parseUrl(
+			Requests_Proxy_Common::serverUrl()
+		);
+		
+		// Set proxy url
+		// +++ Case: proxy assets?
+		$assetsUrl = $this->getAssetsUrl();
+		if ($assetsUrl && $url != $assetsUrl) {
+			$url = $assetsUrl;
+		}
+		// +++ Set proxy url
+		$this->setUrl($url);
+		
 		// Init session data
-		@session_start();
+		/*@session_start();
 		if (!isset($_SESSION[__CLASS__])) {
 			$_SESSION[__CLASS__] = new stdClass();
 		}
-		$this->_session = $_SESSION[__CLASS__];
+		$this->_session = $_SESSION[__CLASS__];*/
 		
-		// Set origin url
-		$this->_originUrlParts = self::parseUrl(self::serverUrl());
-		// Set proxy url
-		// +++ Case: proxy assets?
-		if ($this->_prx['assets'] && ($url != $this->_prx['assets'])) {
-			$url = $this->_prx['assets'];
-		}
-		$this->setUrl($url);
+		// Init hooks utility
+		$this->_hooksUtil = new Requests_Proxy_Hooks();
 		
 		// Initilize
 		$this->_init();
-	}
-	
-	/**
-	 * Is POST requests?
-	 * @return bool
-	 */
-	protected function _isRequestPOST() {
-		return 'POST' == $_SERVER['REQUEST_METHOD'];
-	}
-	/**
-	 * Is GET requests?
-	 * @return bool
-	 */
-	protected function _isRequestGET() {
-		return 'GET' == $_SERVER['REQUEST_METHOD'];
-	}
-	
-	/**
-	 * 
-	 * @return Requests_Response
-	 */
-	protected function _replace302Response(Requests_Response $response) {
-		if (!$response->success && 302 == $response->status_code) {
-			$response = $this->_req->get($response->headers['location']);
-		}
-		return $response;
 	}
 	
 	/**
@@ -443,11 +374,12 @@ class Requests_Proxy {
 				//
 				$requestHost = "{$protocol}{$urlParts['host']}";
 				//
-				if (0 === strpos($attrValue, $requestHost)) {
+				if ($originMatched = (0 === strpos($attrValue, $requestHost))) {
 					$attrValue = str_replace($requestHost, $originHost, $attrValue);
 				}
-				if (false !== strpos($attrValue, $originHost)) {
-					//$attrValue = "?_prx[assets]=" . urlencode($attrValue);
+				// 
+				if (!$originMatched) {
+					$attrValue = "?_prx[assets]=" . urlencode($attrValue);
 				}
 			}
 			// Case: 
@@ -503,6 +435,16 @@ class Requests_Proxy {
 	}
 	
 	/**
+	 * Rewrite response body `js`.
+	 * 
+	 * @param $resBody string Response body `js`.
+	 * @return mixed
+	 */
+	protected function _rewriteResponseJs($resBody) {
+		return $resBody;
+	}
+	
+	/**
 	 * Rewrite cookie string 
 	 * 
 	 * @param $str string Cookie string 
@@ -528,22 +470,25 @@ class Requests_Proxy {
 	
 	/**
 	 * Send request
+	 * 
+	 * @param string $url
+	 * @param array $headers
+	 * @param array $data
+	 * @param array $options
+	 * @return Requests_Response
 	 * @return Requests_Proxy
 	 */
-	protected function _request($url = null)
+	public function request($url = null, $headers = array(), $data = array(), $options = array())
 	{
-		try {
-			// POST requests?
-			if ($this->_isRequestPOST()) {
-				$this->_res = $this->_req->post($url, array(), $_POST);
-				// 	GET requests
-			} elseif ($this->_isRequestGET()) {
-				$this->_res = $this->_req->get($url);
-			}
-		} catch (Exception $e) {
-			
+		// POST requests?
+		if (Requests_Proxy_Common::isRequestPOST()) {
+			$this->_res = $this->_req->post($url, $headers, array_merge($_POST, $data), $options);
+		// 	GET requests
+		} elseif (Requests_Proxy_Common::isRequestGET()) {
+			$this->_res = $this->_req->get($url, $headers, $options);
 		}
 		//require_once "\Zend\Debug.php";
+		//Zend_Debug::dump('===== Response body: ');
 		//Zend_Debug::dump($this->_res);die();
 		// Return
 		return $this;
@@ -567,8 +512,9 @@ class Requests_Proxy {
 		// +++ Clear unuse headers
 		unset(
 			// +++ Don't use this, as it should be controled by ours web server. 
-			$headers['content-encoding'],
-			$headers['content-length']
+			$headers['content-encoding']
+			, $headers['content-length']
+			//, $headers['content-security-policy']
 		);
 		// +++ Set required headers...
 		// +++ +++ 
@@ -601,19 +547,15 @@ class Requests_Proxy {
 	 * Send response body
 	 * @return mixed
 	 */
-	protected function _response() {
+	public function response() {
+		// Write response headers
+		$this->_writeHeaders();
+		// Write response body
+		// +++ Format data
 		$resBody = $this->_res->body;
 		if (is_string($resBody)) {
 			// Get response header `content-type`.
 			$mimeType = $this->_res->headers['content-type'];
-			
-			/*$host = $this->_urlParts['host'];
-			$nHost = $_SERVER['SERVER_NAME'] ?: $_SERVER['HTTP_HOST'];
-			$resBody = str_replace(
-				array("'{$host}'", "\"{$host}\""), 
-				array("'{$nHost}'", "\"{$nHost}\""), 
-				$resBody
-			);*/
 			// Case: content is 'html'
 			if (Requests_Proxy_MimeType::isHtml($mimeType)) {
 				$resBody = $this->_rewriteResponseHtml($resBody);
@@ -622,27 +564,27 @@ class Requests_Proxy {
 			if (Requests_Proxy_MimeType::isCss($mimeType)) {
 				$resBody = $this->_rewriteResponseCss($resBody);
 			}
+			// Case: content is 'csjs'
+			if (Requests_Proxy_MimeType::isJs($mimeType)) {
+				$resBody = $this->_rewriteResponseJs($resBody);
+			}
 		}
+		// +++ Write
+		echo $resBody;
 		// Return
-		return $resBody;
+		return $this;
 	}
 	
 	/**
-	 * Main function
+	 * Main function, run proxy requests
+	 * @return mixed
 	 */
 	public function run()
 	{
-		/*if ($this->_assetsDir) {
-			$filename = $this->_assetsDir . $this->_urlParts['pathname'];
-			if (($uri == $this->_baseUrl) || (!is_file($filename) && !is_dir($filename))) {}
-		}*/
-		// Handle requests
-		echo $this
-			->_request()
-			->_writeHeaders()
-			->_response()
+		// Proxy requests, write headers, and then render response
+		return $this
+			->request()
+			->response()
 		;
-		// Return
-		return $this;
 	}
 }
